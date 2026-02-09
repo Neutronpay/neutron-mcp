@@ -1,0 +1,2 @@
+node_modules/\ndist/\n*.js\n!src/**/*.ts\n.env
+node_modules/
