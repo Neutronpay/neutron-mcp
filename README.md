@@ -150,7 +150,7 @@ Your AI creates the invoice, returns the payment string and QR code page. Custom
 |----------|----------|-------------|
 | `NEUTRON_API_KEY` | Yes | Your Neutron API key |
 | `NEUTRON_API_SECRET` | Yes | Your Neutron API secret |
-| `NEUTRON_API_URL` | No | API URL (default: `https://enapi.npay.live`) |
+| `NEUTRON_API_URL` | No | API URL (default: `https://api.neutron.me`) |
 
 ---
 

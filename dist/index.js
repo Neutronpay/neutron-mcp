@@ -8,7 +8,7 @@ let _client = null;
 function getClient() {
     if (_client)
         return _client;
-    const apiUrl = process.env.NEUTRON_API_URL || "https://enapi.npay.live";
+    const apiUrl = process.env.NEUTRON_API_URL || "https://api.neutron.me";
     const apiKey = process.env.NEUTRON_API_KEY;
     const apiSecret = process.env.NEUTRON_API_SECRET;
     if (!apiKey || !apiSecret) {
@@ -517,7 +517,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Neutron MCP Server v1.1.1 running on stdio");
+    console.error("Neutron MCP Server v1.1.4 running on stdio");
 }
 main().catch((error) => {
     console.error("Fatal error:", error);
