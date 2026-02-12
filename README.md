@@ -105,13 +105,6 @@ Your AI creates the invoice, returns the payment string and QR code page. Custom
 | `neutron_get_transaction` | Check transaction status |
 | `neutron_list_transactions` | List/filter transaction history |
 
-### Lightning Utilities
-| Tool | What It Does |
-|------|-------------|
-| `neutron_decode_invoice` | Inspect a BOLT11 invoice (amount, expiry, status) |
-| `neutron_resolve_lightning_address` | Verify a Lightning Address (user@domain.com) |
-| `neutron_resolve_lnurl` | Decode an LNURL string |
-
 ### Receive Addresses
 | Tool | What It Does |
 |------|-------------|
