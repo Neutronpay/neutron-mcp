@@ -28,9 +28,6 @@ export declare class NeutronClient {
     confirmTransaction(transactionId: string): Promise<any>;
     getTransaction(transactionId: string): Promise<any>;
     listTransactions(params?: Record<string, any>): Promise<any>;
-    decodeInvoice(invoice: string): Promise<any>;
-    resolveLightningAddress(address: string, amountMsat?: number): Promise<any>;
-    resolveLnurl(lnurl: string): Promise<any>;
     getBtcReceiveAddress(): Promise<any>;
     getUsdtReceiveAddress(chainId?: string): Promise<any>;
     createWebhook(body: {

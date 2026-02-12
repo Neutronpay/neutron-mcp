@@ -110,19 +110,6 @@ export class NeutronClient {
         const query = qs.toString();
         return this.request("GET", `/api/v2/transaction${query ? `?${query}` : ""}`);
     }
-    // ── Lightning ────────────────────────────────────────────
-    async decodeInvoice(invoice) {
-        return this.request("GET", `/api/v2/lightning/invoice?invoice=${encodeURIComponent(invoice)}`);
-    }
-    async resolveLightningAddress(address, amountMsat) {
-        let path = `/api/v2/lightning/resolve-ln-address?lnAddress=${encodeURIComponent(address)}`;
-        if (amountMsat !== undefined)
-            path += `&amount=${amountMsat}`;
-        return this.request("GET", path);
-    }
-    async resolveLnurl(lnurl) {
-        return this.request("GET", `/api/v2/lightning/resolve-lnurl?lnurl=${encodeURIComponent(lnurl)}`);
-    }
     // ── Receive Addresses ────────────────────────────────────
     async getBtcReceiveAddress() {
         return this.request("GET", `/api/v2/account/onchain-address`);

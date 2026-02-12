@@ -19,7 +19,7 @@ function getClient() {
     return _client;
 }
 // ── MCP server ─────────────────────────────────────────────
-const server = new Server({ name: "neutron-mcp-server", version: "1.1.1" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "neutron-mcp-server", version: "1.1.5" }, { capabilities: { tools: {} } });
 // ── Tool definitions ───────────────────────────────────────
 const tools = [
     // ── Authentication ──
@@ -203,41 +203,6 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
                 offset: { type: "number", description: "Offset for pagination" },
             },
             required: [],
-        },
-    },
-    // ── Lightning utilities ──
-    {
-        name: "neutron_decode_invoice",
-        description: "Decode a BOLT11 Lightning invoice to inspect amount, expiry, destination, and payment status before paying.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                invoice: { type: "string", description: "BOLT11 invoice string (starts with lnbc...)" },
-            },
-            required: ["invoice"],
-        },
-    },
-    {
-        name: "neutron_resolve_lightning_address",
-        description: "Look up a Lightning Address (user@domain.com) to verify it exists and check its parameters (min/max amounts).",
-        inputSchema: {
-            type: "object",
-            properties: {
-                address: { type: "string", description: "Lightning Address (e.g. alice@getalby.com)" },
-                amountMsat: { type: "number", description: "Optional: amount in millisatoshis to get a specific invoice" },
-            },
-            required: ["address"],
-        },
-    },
-    {
-        name: "neutron_resolve_lnurl",
-        description: "Resolve an LNURL string to see its type (pay/withdraw/channel) and parameters.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                lnurl: { type: "string", description: "LNURL string (starts with lnurl1...)" },
-            },
-            required: ["lnurl"],
         },
     },
     // ── Receive addresses ──
@@ -456,16 +421,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result = await client.listTransactions({ status, method, currency, fromDate, toDate, limit, offset });
                 break;
             }
-            // ── Lightning utilities ──
-            case "neutron_decode_invoice":
-                result = await client.decodeInvoice(args.invoice);
-                break;
-            case "neutron_resolve_lightning_address":
-                result = await client.resolveLightningAddress(args.address, args.amountMsat);
-                break;
-            case "neutron_resolve_lnurl":
-                result = await client.resolveLnurl(args.lnurl);
-                break;
             // ── Receive addresses ──
             case "neutron_get_btc_address":
                 result = await client.getBtcReceiveAddress();
@@ -517,7 +472,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Neutron MCP Server v1.1.4 running on stdio");
+    console.error("Neutron MCP Server v1.1.5 running on stdio");
 }
 main().catch((error) => {
     console.error("Fatal error:", error);
