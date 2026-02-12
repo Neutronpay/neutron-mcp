@@ -133,7 +133,7 @@ Your AI creates the invoice, returns the payment string and QR code page. Custom
 - **Two-step flow**: `create_transaction` returns a quote → `confirm_transaction` executes it.
 - **Set amount on one side only** — source OR destination, not both.
 - **`create_lightning_invoice`** is a shortcut that auto-confirms (no second step needed).
-- **Fiat payouts require KYC** (recipient name + country). Lightning and crypto do not.
+- **Fiat payouts require KYC** (recipient name + country). Bitcoin (Lightning + on-chain), stablecoins (USDT on TRON/ETH), and swaps require **no KYC**.
 
 ---
 
