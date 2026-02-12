@@ -65,7 +65,9 @@ export class NeutronClient {
       );
     }
 
-    const authResult = (await response.json()) as AuthResponse;
+    const raw = (await response.json()) as any;
+    // API wraps auth response in { data: { ... } }
+    const authResult: AuthResponse = raw.data ?? raw;
     this.accountId = authResult.accountId;
     this.accessToken = authResult.accessToken;
     this.cachedAuthResponse = authResult;

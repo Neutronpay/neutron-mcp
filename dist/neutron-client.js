@@ -37,7 +37,9 @@ export class NeutronClient {
             const error = await response.json().catch(() => ({}));
             throw new Error(`Authentication failed: ${response.status} - ${error.message || error.error || response.statusText}`);
         }
-        const authResult = (await response.json());
+        const raw = (await response.json());
+        // API wraps auth response in { data: { ... } }
+        const authResult = raw.data ?? raw;
         this.accountId = authResult.accountId;
         this.accessToken = authResult.accessToken;
         this.cachedAuthResponse = authResult;
