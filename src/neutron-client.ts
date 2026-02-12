@@ -94,10 +94,8 @@ export class NeutronClient {
     const url = `${this.config.apiUrl}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.accessToken}`,
+      "Content-Type": "application/json",
     };
-    if (body) {
-      headers["Content-Type"] = "application/json";
-    }
 
     const response = await fetch(url, {
       method,

@@ -1,6 +1,6 @@
 {
   "name": "neutron-mcp",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "MCP server for Neutron - Lightning payments, Bitcoin, USDT, and fiat transactions for AI-powered applications",
   "main": "dist/index.js",
   "bin": {
