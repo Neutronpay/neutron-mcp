@@ -32,9 +32,26 @@ function getClient(): NeutronClient {
 // ── MCP server ─────────────────────────────────────────────
 
 const server = new Server(
-  { name: "neutron-mcp-server", version: "1.1.5" },
+  { name: "neutron-mcp-server", version: "1.3.0" },
   { capabilities: { tools: {} } }
 );
+
+// ── Lending PoC client ────────────────────────────────────
+
+const LENDING_API = process.env.NEUTRON_LENDING_URL || "http://localhost:3001";
+
+async function lendingRequest(method: string, path: string, body?: any): Promise<any> {
+  const url = `${LENDING_API}${path}`;
+  const opts: RequestInit = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  };
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Lending API error ${res.status}`);
+  return data;
+}
 
 // ── Tool definitions ───────────────────────────────────────
 
@@ -303,6 +320,173 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
   },
 
   // ── Reference data ──
+  // ── Lending ──
+  {
+    name: "neutron_lend_simulate",
+    description:
+      "Preview a collateralized loan. Deposit BTC as collateral, receive USDT. Shows loan amount, interest (8% APR), total payback, and liquidation price.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        btcAmount: { type: "number", description: "BTC amount to use as collateral (e.g. 1.0)" },
+        ltvRatio: { type: "number", enum: [0.5, 0.6], description: "Loan-to-value ratio: 0.5 (50%, safer) or 0.6 (60%, more USDT but higher liquidation risk)" },
+      },
+      required: ["btcAmount", "ltvRatio"],
+    },
+  },
+  {
+    name: "neutron_lend_quote",
+    description:
+      "Lock a BTC price for 6 minutes. Use this before creating a loan to guarantee the price. Returns a quoteId to pass to neutron_lend_create.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agentId: { type: "string", description: "Your agent identifier" },
+        btcAmount: { type: "number", description: "BTC collateral amount" },
+        ltvRatio: { type: "number", enum: [0.5, 0.6], description: "LTV ratio: 0.5 or 0.6" },
+      },
+      required: ["agentId", "btcAmount", "ltvRatio"],
+    },
+  },
+  {
+    name: "neutron_lend_create",
+    description:
+      "Create a collateralized loan with real 2-of-3 multisig. Flow: quote (optional) → create → send BTC to depositAddress → confirm collateral → USDt disbursed. If borrowerPubkey provided, a real P2WSH multisig deposit address is generated. Returns depositAddress, dlcContractId, and multisig keys.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agentId: { type: "string", description: "Your agent identifier" },
+        btcAmount: { type: "number", description: "BTC collateral amount" },
+        ltvRatio: { type: "number", enum: [0.5, 0.6], description: "LTV ratio: 0.5 or 0.6" },
+        returnAddress: { type: "string", description: "BTC address to return collateral after full repayment (bc1q... or tb1q... for testnet)" },
+        usdtReceiveAddress: { type: "string", description: "Your Ethereum/Base address to receive USDt loan (0x...)" },
+        quoteId: { type: "string", description: "Optional — quoteId from neutron_lend_quote to lock price" },
+        borrowerPubkey: { type: "string", description: "Optional — your compressed BTC public key (hex, 66 chars) for real 2-of-3 multisig. If omitted, a simulated deposit address is used." },
+      },
+      required: ["agentId", "btcAmount", "ltvRatio", "returnAddress", "usdtReceiveAddress"],
+    },
+  },
+  {
+    name: "neutron_lend_confirm_collateral",
+    description:
+      "Confirm BTC collateral deposit. Call after sending BTC to the multisig address. Requires 3+ on-chain confirmations. After confirmation, USDt can be disbursed.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID" },
+        btcDepositTxid: { type: "string", description: "BTC deposit transaction ID" },
+        confirmations: { type: "number", description: "Number of on-chain confirmations (minimum 3)" },
+      },
+      required: ["loanId", "btcDepositTxid", "confirmations"],
+    },
+  },
+  {
+    name: "neutron_lend_disburse",
+    description:
+      "Disburse USDt loan to agent's Ethereum address. Only works after BTC collateral is confirmed. Returns the Etherscan transaction link.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID" },
+      },
+      required: ["loanId"],
+    },
+  },
+  {
+    name: "neutron_lend_status",
+    description:
+      "Get loan details: collateral, loan amount, total owed, repaid amount, liquidation price, status, repayment history.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID" },
+      },
+      required: ["loanId"],
+    },
+  },
+  {
+    name: "neutron_lend_repay",
+    description:
+      "Make a USDt (ERC-20) repayment on a loan. Send USDt to the loan's repayment address, then call this with the Ethereum transaction ID. Can be partial or full. When fully repaid, BTC collateral is automatically released.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID" },
+        usdtAmount: { type: "number", description: "USDt amount repaid" },
+        ethTxid: { type: "string", description: "Ethereum transaction hash of the USDt payment (0x...)" },
+        fromAddress: { type: "string", description: "Ethereum address the USDt was sent from (0x...)" },
+      },
+      required: ["loanId", "usdtAmount"],
+    },
+  },
+  {
+    name: "neutron_lend_list",
+    description: "List all loans for an agent. Shows active, repaid, liquidated, and defaulted loans.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agentId: { type: "string", description: "Agent ID to list loans for" },
+      },
+      required: ["agentId"],
+    },
+  },
+  {
+    name: "neutron_lend_rollover",
+    description:
+      "Rollover/extend a loan by 1 year. Adds $500 flat fee and increases interest rate by 1% (e.g. 8%→9%). IMPORTANT: Before calling this, you MUST present the terms to the user and get explicit acceptance: $500 fee, +1% interest, new expiry, non-refundable. Set acceptTerms=true only after user confirms.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID to rollover" },
+        acceptTerms: { type: "boolean", description: "Must be true — confirms user accepted rollover terms ($500 fee, +1% interest, 1yr extension)" },
+      },
+      required: ["loanId", "acceptTerms"],
+    },
+  },
+  {
+    name: "neutron_lend_check_liquidation",
+    description:
+      "Check if a loan should be liquidated based on current BTC price. If price is below liquidation threshold, collateral is seized.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID" },
+      },
+      required: ["loanId"],
+    },
+  },
+  {
+    name: "neutron_lend_btc_price",
+    description: "Get the current BTC price used by the lending engine.",
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
+  },
+
+  {
+    name: "neutron_lend_settle",
+    description:
+      "Settle a fully-repaid loan by releasing BTC collateral from the 2-of-3 multisig back to the borrower's return address. Only works when loan status is 'repaid'. Broadcasts a signed Bitcoin transaction and returns the settlement txid with explorer link.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        loanId: { type: "string", description: "Loan ID to settle" },
+      },
+      required: ["loanId"],
+    },
+  },
+  {
+    name: "neutron_lend_notifications",
+    description: "Get notifications for an agent. Includes expiry warnings, payment confirmations, liquidation alerts, and rollover confirmations.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agentId: { type: "string", description: "Agent ID" },
+        unreadOnly: { type: "boolean", description: "Only return unread notifications (default: false)" },
+      },
+      required: ["agentId"],
+    },
+  },
+
+  // ── Reference data ──
   {
     name: "neutron_get_rate",
     description:
@@ -506,6 +690,154 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
 
       // ── Reference data ──
+      // ── Lending ──
+      case "neutron_lend_simulate":
+        result = await lendingRequest("POST", "/api/loans/simulate", {
+          btcAmount: (args as any).btcAmount,
+          ltvRatio: (args as any).ltvRatio,
+        });
+        break;
+
+      case "neutron_lend_quote":
+        result = await lendingRequest("POST", "/api/loans/quote", {
+          agentId: (args as any).agentId,
+          btcAmount: (args as any).btcAmount,
+          ltvRatio: (args as any).ltvRatio,
+        });
+        break;
+
+      case "neutron_lend_create": {
+        // Step 1: Create loan
+        const loanPayload: any = {
+          agentId: (args as any).agentId,
+          btcAmount: (args as any).btcAmount,
+          ltvRatio: (args as any).ltvRatio,
+          returnAddress: (args as any).returnAddress,
+          usdtReceiveAddress: (args as any).usdtReceiveAddress,
+        };
+        if ((args as any).quoteId) loanPayload.quoteId = (args as any).quoteId;
+        
+        const loan = await lendingRequest("POST", "/api/loans", loanPayload);
+        
+        // Step 2: If borrowerPubkey provided, create DLC contract with real multisig
+        if ((args as any).borrowerPubkey && loan.id) {
+          try {
+            const dlc = await lendingRequest("POST", "/api/dlc/contracts", {
+              loanId: loan.id,
+              borrowerPubkey: (args as any).borrowerPubkey,
+              collateralSats: Math.round((args as any).btcAmount * 1e8),
+              liquidationPrice: loan.liquidationPrice,
+              returnAddress: (args as any).returnAddress,
+            });
+            loan.dlcContractId = dlc.contractId;
+            loan.depositAddress = dlc.multisig?.address || dlc.depositAddress;
+            loan.multisig = dlc.multisig;
+            loan.explorer = { ...loan.explorer, multisigAddress: dlc.explorer?.multisigAddress };
+          } catch (e: any) {
+            loan.dlcError = e.message || "Failed to create DLC contract";
+          }
+        }
+        
+        result = loan;
+        break;
+      }
+
+      case "neutron_lend_confirm_collateral":
+        result = await lendingRequest("POST", `/api/loans/${(args as any).loanId}/confirm-collateral`, {
+          btcDepositTxid: (args as any).btcDepositTxid,
+          confirmations: (args as any).confirmations,
+        });
+        break;
+
+      case "neutron_lend_disburse":
+        result = await lendingRequest("POST", `/api/loans/${(args as any).loanId}/disburse`);
+        break;
+
+      case "neutron_lend_status": {
+        const loan = await lendingRequest("GET", `/api/loans/${(args as any).loanId}`);
+        // Fetch DLC contract for verification links
+        let dlcInfo: any = null;
+        try {
+          dlcInfo = await lendingRequest("GET", `/api/dlc/contracts/by-loan/${(args as any).loanId}`);
+        } catch { /* no DLC contract */ }
+        result = {
+          ...loan,
+          ...(dlcInfo ? {
+            dlcContract: {
+              status: dlcInfo.status,
+              multisig: dlcInfo.multisig,
+              depositAddress: dlcInfo.depositAddress,
+              fundingTxid: dlcInfo.fundingTxid,
+              verification: {
+                multisigAddress: dlcInfo.depositAddress ? `https://mempool.space/address/${dlcInfo.depositAddress}` : null,
+                fundingTransaction: dlcInfo.fundingTxid && dlcInfo.fundingTxid !== 'pending' ? `https://mempool.space/tx/${dlcInfo.fundingTxid}` : null,
+                note: "Share these links as proof that BTC collateral is locked in a 2-of-3 multisig and cannot be moved without 2 key holders signing.",
+              },
+            },
+          } : {}),
+        };
+        break;
+      }
+
+      case "neutron_lend_repay":
+        result = await lendingRequest("POST", `/api/loans/${(args as any).loanId}/repay`, {
+          usdtAmount: (args as any).usdtAmount,
+          ethTxid: (args as any).ethTxid,
+          fromAddress: (args as any).fromAddress,
+        });
+        break;
+
+      case "neutron_lend_list":
+        result = await lendingRequest("GET", `/api/loans?agent_id=${(args as any).agentId}`);
+        break;
+
+      case "neutron_lend_rollover":
+        if (!(args as any).acceptTerms) {
+          throw new Error("Terms not accepted. You must present rollover terms to the user first: $500 flat fee, +1% interest rate increase, 1-year extension, non-refundable. Set acceptTerms=true only after explicit user confirmation.");
+        }
+        result = await lendingRequest("POST", `/api/loans/${(args as any).loanId}/rollover`);
+        break;
+
+      case "neutron_lend_check_liquidation":
+        result = await lendingRequest("POST", `/api/loans/${(args as any).loanId}/liquidation-check`);
+        break;
+
+      case "neutron_lend_btc_price":
+        result = await lendingRequest("GET", "/api/loans/admin/price");
+        break;
+
+      case "neutron_lend_settle": {
+        // Get loan to verify it's repaid
+        const settleLoan = await lendingRequest("GET", `/api/loans/${(args as any).loanId}`);
+        if (settleLoan.status !== 'repaid') {
+          throw new Error(`Loan status is '${settleLoan.status}' — must be 'repaid' to settle. Remaining owed: $${settleLoan.remainingOwed || 'unknown'}`);
+        }
+        // Get DLC contract for this loan
+        const dlcForSettle = await lendingRequest("GET", `/api/dlc/contracts/by-loan/${(args as any).loanId}`);
+        if (!dlcForSettle || !dlcForSettle.contractId) {
+          throw new Error("No DLC contract found for this loan. Cannot settle without multisig.");
+        }
+        // Trigger settlement — builds, signs with 2-of-3, and broadcasts
+        const settlement = await lendingRequest("POST", `/api/dlc/contracts/${dlcForSettle.contractId}/settle`);
+        result = {
+          success: true,
+          loanId: (args as any).loanId,
+          contractId: dlcForSettle.contractId,
+          settlementTxid: settlement.txid || settlement.settlementTxid,
+          returnAddress: settleLoan.returnAddress,
+          explorer: settlement.txid ? `https://mempool.space/testnet4/tx/${settlement.txid}` : null,
+          message: "BTC collateral released from multisig back to borrower. Settlement transaction broadcast to network.",
+        };
+        break;
+      }
+
+      case "neutron_lend_notifications": {
+        const unread = (args as any).unreadOnly ? '?unread=true' : '';
+        result = await lendingRequest("GET", `/api/notifications/agent/${(args as any).agentId}${unread}`);
+        break;
+      }
+
+      // ── Reference data ──
       case "neutron_get_rate":
         result = await client.getRate();
         break;
@@ -534,7 +866,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Neutron MCP Server v1.1.5 running on stdio");
+  console.error("Neutron MCP Server v1.3.0 running on stdio");
 }
 
 main().catch((error) => {
