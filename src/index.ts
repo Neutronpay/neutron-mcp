@@ -486,6 +486,20 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
     },
   },
 
+  // ── SSE Streaming ──
+  {
+    name: "neutron_subscribe_status",
+    description: "Stream real-time transaction status updates via SSE. Use this for agents that cannot receive webhook POSTs (ephemeral agents without a public endpoint). Connects to the Neutron SSE stream and returns updates as they arrive.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        transactionId: { type: "string", description: "Transaction ID to monitor" },
+        timeoutSeconds: { type: "number", description: "Max seconds to wait (default: 60)" },
+      },
+      required: ["transactionId"],
+    },
+  },
+
   // ── Reference data ──
   {
     name: "neutron_get_rate",
@@ -586,6 +600,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           memo: memo || null,
           status: confirmed.txnState,
           message: "Lightning invoice created and confirmed. Share the invoice string or QR page URL to receive payment.",
+          tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
         };
         break;
       }
@@ -638,13 +653,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ...(sourceOfFunds ? { sourceOfFunds } : {}),
         };
 
-        result = await client.createTransaction(body);
+        result = {
+          ...await client.createTransaction(body),
+          tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
+        };
         break;
       }
 
       // ── Transaction management ──
       case "neutron_confirm_transaction":
-        result = await client.confirmTransaction((args as any).transactionId);
+        result = {
+          ...await client.confirmTransaction((args as any).transactionId),
+          tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
+        };
         break;
 
       case "neutron_get_transaction":
@@ -834,6 +855,91 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "neutron_lend_notifications": {
         const unread = (args as any).unreadOnly ? '?unread=true' : '';
         result = await lendingRequest("GET", `/api/notifications/agent/${(args as any).agentId}${unread}`);
+        break;
+      }
+
+      // ── SSE Streaming ──
+      // NOTE: The server-side SSE endpoint (/api/v2/events/stream) does not exist yet.
+      // This is a client-side implementation only. Use neutron_create_webhook as fallback.
+      case "neutron_subscribe_status": {
+        const { transactionId, timeoutSeconds = 60 } = args as any;
+        const baseUrl = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+        const apiKey = process.env.NEUTRON_API_KEY;
+        const apiSecret = process.env.NEUTRON_API_SECRET;
+        const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${transactionId}`;
+
+        result = await new Promise((resolve, _reject) => {
+          const timeout = setTimeout(() => {
+            resolve({
+              success: false,
+              transactionId,
+              message: `SSE timeout after ${timeoutSeconds}s. No terminal status received.`,
+              tip: "Consider using neutron_create_webhook for persistent status delivery.",
+            });
+          }, timeoutSeconds * 1000);
+
+          const events: any[] = [];
+
+          fetch(sseUrl, {
+            headers: {
+              "Accept": "text/event-stream",
+              "x-api-key": apiKey || "",
+              "x-api-secret": apiSecret || "",
+            },
+          }).then(async (res) => {
+            if (!res.ok || !res.body) {
+              clearTimeout(timeout);
+              resolve({
+                success: false,
+                error: `SSE connection failed: ${res.status} ${res.statusText}`,
+                tip: "Ensure the Neutron API supports SSE at /api/v2/events/stream",
+              });
+              return;
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  try {
+                    const data = JSON.parse(line.slice(6));
+                    events.push(data);
+                    if (["completed", "failed", "expired", "cancelled"].includes(data.status)) {
+                      const finalStatus = data.status;
+                      clearTimeout(timeout);
+                      reader.cancel();
+                      resolve({
+                        success: true,
+                        transactionId,
+                        finalStatus,
+                        events,
+                        message: `Transaction reached terminal state: ${finalStatus}`,
+                      });
+                      return;
+                    }
+                  } catch {}
+                }
+              }
+            }
+          }).catch((err) => {
+            clearTimeout(timeout);
+            resolve({
+              success: false,
+              error: err.message,
+              tip: "SSE connection error. The server-side endpoint may not be live yet. Use neutron_create_webhook as fallback.",
+            });
+          });
+        });
         break;
       }
 
