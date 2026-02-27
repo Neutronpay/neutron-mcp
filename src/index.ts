@@ -874,11 +874,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // SECURITY: clamp timeout to 5–300 seconds to prevent resource exhaustion
         const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
 
-        const baseUrl = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
-        const apiKey = process.env.NEUTRON_API_KEY;
-        const apiSecret = process.env.NEUTRON_API_SECRET;
-        // Safe: transactionId validated as UUID above
-        const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${transactionId}`;
+        // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
+        const rawBase = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+        let baseUrl: string;
+        try {
+          const u = new URL(rawBase);
+          if (u.protocol !== "https:") throw new Error("must use HTTPS");
+          const blocked = ["localhost", "127.", "0.0.0.0", "169.254.", "10.", "192.168.", "172."];
+          if (blocked.some(b => u.hostname.startsWith(b))) throw new Error(`blocked host: ${u.hostname}`);
+          baseUrl = rawBase.replace(/\/+$/, "");
+        } catch (e: any) {
+          result = { success: false, error: `Invalid NEUTRON_API_BASE: ${e.message}` };
+          break;
+        }
+
+        // SECURITY: encodeURIComponent — UUID chars are safe but be explicit
+        const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${encodeURIComponent(transactionId)}`;
+
+        // SECURITY: use Bearer token auth — never send raw API secret over wire
+        const authHeader = await client.getAuthHeader();
 
         result = await new Promise((resolve, _reject) => {
           const timeout = setTimeout(() => {
@@ -895,8 +909,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           fetch(sseUrl, {
             headers: {
               "Accept": "text/event-stream",
-              "x-api-key": apiKey || "",
-              "x-api-secret": apiSecret || "",
+              ...authHeader,
             },
           }).then(async (res) => {
             if (!res.ok || !res.body) {
@@ -912,12 +925,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = "";
+            const MAX_BUFFER = 64 * 1024; // 64KB — prevent OOM from malformed stream
 
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
 
               buffer += decoder.decode(value, { stream: true });
+
+              // SECURITY: abort on unbounded buffer growth
+              if (buffer.length > MAX_BUFFER) {
+                clearTimeout(timeout);
+                reader.cancel();
+                resolve({ success: false, error: "SSE buffer overflow — server sent malformed stream." });
+                return;
+              }
+
               const lines = buffer.split("\n");
               buffer = lines.pop() || "";
 
