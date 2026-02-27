@@ -863,9 +863,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // This is a client-side implementation only. Use neutron_create_webhook as fallback.
       case "neutron_subscribe_status": {
         const { transactionId, timeoutSeconds = 60 } = args as any;
+
+        // SECURITY: validate transactionId is a UUID to prevent SSRF/path traversal
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!UUID_RE.test(String(transactionId))) {
+          result = { success: false, error: "Invalid transactionId format. Must be a UUID." };
+          break;
+        }
+
+        // SECURITY: clamp timeout to 5–300 seconds to prevent resource exhaustion
+        const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
+
         const baseUrl = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
         const apiKey = process.env.NEUTRON_API_KEY;
         const apiSecret = process.env.NEUTRON_API_SECRET;
+        // Safe: transactionId validated as UUID above
         const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${transactionId}`;
 
         result = await new Promise((resolve, _reject) => {
@@ -873,10 +885,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             resolve({
               success: false,
               transactionId,
-              message: `SSE timeout after ${timeoutSeconds}s. No terminal status received.`,
+              message: `SSE timeout after ${clampedTimeout}s. No terminal status received.`,
               tip: "Consider using neutron_create_webhook for persistent status delivery.",
             });
-          }, timeoutSeconds * 1000);
+          }, clampedTimeout * 1000);
 
           const events: any[] = [];
 
@@ -927,7 +939,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                       });
                       return;
                     }
-                  } catch {}
+                  } catch (parseErr) {
+                    // Log malformed SSE data but keep the stream alive
+                    console.error("[SSE] Failed to parse event data:", parseErr);
+                  }
                 }
               }
             }
