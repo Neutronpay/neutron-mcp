@@ -20,6 +20,8 @@ export declare class NeutronClient {
     private ensureAuthenticated;
     authenticate(): Promise<AuthResponse>;
     getAccountId(): string | null;
+    /** Returns Authorization header with a valid Bearer token. Use for raw fetch() calls. */
+    getAuthHeader(): Promise<Record<string, string>>;
     private request;
     getAccount(): Promise<any>;
     getWallets(): Promise<any>;

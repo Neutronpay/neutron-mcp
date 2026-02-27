@@ -90,6 +90,12 @@ export class NeutronClient {
     return this.accountId;
   }
 
+  /** Returns Authorization header with a valid Bearer token. Use for raw fetch() calls. */
+  async getAuthHeader(): Promise<Record<string, string>> {
+    await this.ensureAuthenticated();
+    return { Authorization: `Bearer ${this.accessToken}` };
+  }
+
   private async request(method: string, path: string, body?: any): Promise<any> {
     await this.ensureAuthenticated();
 

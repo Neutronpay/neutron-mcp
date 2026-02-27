@@ -20,21 +20,6 @@ function getClient() {
 }
 // ── MCP server ─────────────────────────────────────────────
 const server = new Server({ name: "neutron-mcp-server", version: "1.3.0" }, { capabilities: { tools: {} } });
-// ── Lending PoC client ────────────────────────────────────
-const LENDING_API = process.env.NEUTRON_LENDING_URL || "http://localhost:3001";
-async function lendingRequest(method, path, body) {
-    const url = `${LENDING_API}${path}`;
-    const opts = {
-        method,
-        headers: { "Content-Type": "application/json" },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-    };
-    const res = await fetch(url, opts);
-    const data = await res.json();
-    if (!res.ok)
-        throw new Error(data.error || `Lending API error ${res.status}`);
-    return data;
-}
 // ── Tool definitions ───────────────────────────────────────
 const tools = [
     // ── Authentication ──
@@ -284,158 +269,17 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
         },
     },
     // ── Reference data ──
-    // ── Lending ──
+    // ── SSE Streaming ──
     {
-        name: "neutron_lend_simulate",
-        description: "Preview a collateralized loan. Deposit BTC as collateral, receive USDT. Shows loan amount, interest (8% APR), total payback, and liquidation price.",
+        name: "neutron_subscribe_status",
+        description: "Stream real-time transaction status updates via SSE. Use this for agents that cannot receive webhook POSTs (ephemeral agents without a public endpoint). Connects to the Neutron SSE stream and returns updates as they arrive.",
         inputSchema: {
             type: "object",
             properties: {
-                btcAmount: { type: "number", description: "BTC amount to use as collateral (e.g. 1.0)" },
-                ltvRatio: { type: "number", enum: [0.5, 0.6], description: "Loan-to-value ratio: 0.5 (50%, safer) or 0.6 (60%, more USDT but higher liquidation risk)" },
+                transactionId: { type: "string", description: "Transaction ID to monitor" },
+                timeoutSeconds: { type: "number", description: "Max seconds to wait (default: 60)" },
             },
-            required: ["btcAmount", "ltvRatio"],
-        },
-    },
-    {
-        name: "neutron_lend_quote",
-        description: "Lock a BTC price for 6 minutes. Use this before creating a loan to guarantee the price. Returns a quoteId to pass to neutron_lend_create.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                agentId: { type: "string", description: "Your agent identifier" },
-                btcAmount: { type: "number", description: "BTC collateral amount" },
-                ltvRatio: { type: "number", enum: [0.5, 0.6], description: "LTV ratio: 0.5 or 0.6" },
-            },
-            required: ["agentId", "btcAmount", "ltvRatio"],
-        },
-    },
-    {
-        name: "neutron_lend_create",
-        description: "Create a collateralized loan with real 2-of-3 multisig. Flow: quote (optional) → create → send BTC to depositAddress → confirm collateral → USDt disbursed. If borrowerPubkey provided, a real P2WSH multisig deposit address is generated. Returns depositAddress, dlcContractId, and multisig keys.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                agentId: { type: "string", description: "Your agent identifier" },
-                btcAmount: { type: "number", description: "BTC collateral amount" },
-                ltvRatio: { type: "number", enum: [0.5, 0.6], description: "LTV ratio: 0.5 or 0.6" },
-                returnAddress: { type: "string", description: "BTC address to return collateral after full repayment (bc1q... or tb1q... for testnet)" },
-                usdtReceiveAddress: { type: "string", description: "Your Ethereum/Base address to receive USDt loan (0x...)" },
-                quoteId: { type: "string", description: "Optional — quoteId from neutron_lend_quote to lock price" },
-                borrowerPubkey: { type: "string", description: "Optional — your compressed BTC public key (hex, 66 chars) for real 2-of-3 multisig. If omitted, a simulated deposit address is used." },
-            },
-            required: ["agentId", "btcAmount", "ltvRatio", "returnAddress", "usdtReceiveAddress"],
-        },
-    },
-    {
-        name: "neutron_lend_confirm_collateral",
-        description: "Confirm BTC collateral deposit. Call after sending BTC to the multisig address. Requires 3+ on-chain confirmations. After confirmation, USDt can be disbursed.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID" },
-                btcDepositTxid: { type: "string", description: "BTC deposit transaction ID" },
-                confirmations: { type: "number", description: "Number of on-chain confirmations (minimum 3)" },
-            },
-            required: ["loanId", "btcDepositTxid", "confirmations"],
-        },
-    },
-    {
-        name: "neutron_lend_disburse",
-        description: "Disburse USDt loan to agent's Ethereum address. Only works after BTC collateral is confirmed. Returns the Etherscan transaction link.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID" },
-            },
-            required: ["loanId"],
-        },
-    },
-    {
-        name: "neutron_lend_status",
-        description: "Get loan details: collateral, loan amount, total owed, repaid amount, liquidation price, status, repayment history.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID" },
-            },
-            required: ["loanId"],
-        },
-    },
-    {
-        name: "neutron_lend_repay",
-        description: "Make a USDt (ERC-20) repayment on a loan. Send USDt to the loan's repayment address, then call this with the Ethereum transaction ID. Can be partial or full. When fully repaid, BTC collateral is automatically released.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID" },
-                usdtAmount: { type: "number", description: "USDt amount repaid" },
-                ethTxid: { type: "string", description: "Ethereum transaction hash of the USDt payment (0x...)" },
-                fromAddress: { type: "string", description: "Ethereum address the USDt was sent from (0x...)" },
-            },
-            required: ["loanId", "usdtAmount"],
-        },
-    },
-    {
-        name: "neutron_lend_list",
-        description: "List all loans for an agent. Shows active, repaid, liquidated, and defaulted loans.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                agentId: { type: "string", description: "Agent ID to list loans for" },
-            },
-            required: ["agentId"],
-        },
-    },
-    {
-        name: "neutron_lend_rollover",
-        description: "Rollover/extend a loan by 1 year. Adds $500 flat fee and increases interest rate by 1% (e.g. 8%→9%). IMPORTANT: Before calling this, you MUST present the terms to the user and get explicit acceptance: $500 fee, +1% interest, new expiry, non-refundable. Set acceptTerms=true only after user confirms.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID to rollover" },
-                acceptTerms: { type: "boolean", description: "Must be true — confirms user accepted rollover terms ($500 fee, +1% interest, 1yr extension)" },
-            },
-            required: ["loanId", "acceptTerms"],
-        },
-    },
-    {
-        name: "neutron_lend_check_liquidation",
-        description: "Check if a loan should be liquidated based on current BTC price. If price is below liquidation threshold, collateral is seized.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID" },
-            },
-            required: ["loanId"],
-        },
-    },
-    {
-        name: "neutron_lend_btc_price",
-        description: "Get the current BTC price used by the lending engine.",
-        inputSchema: { type: "object", properties: {}, required: [] },
-    },
-    {
-        name: "neutron_lend_settle",
-        description: "Settle a fully-repaid loan by releasing BTC collateral from the 2-of-3 multisig back to the borrower's return address. Only works when loan status is 'repaid'. Broadcasts a signed Bitcoin transaction and returns the settlement txid with explorer link.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                loanId: { type: "string", description: "Loan ID to settle" },
-            },
-            required: ["loanId"],
-        },
-    },
-    {
-        name: "neutron_lend_notifications",
-        description: "Get notifications for an agent. Includes expiry warnings, payment confirmations, liquidation alerts, and rollover confirmations.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                agentId: { type: "string", description: "Agent ID" },
-                unreadOnly: { type: "boolean", description: "Only return unread notifications (default: false)" },
-            },
-            required: ["agentId"],
+            required: ["transactionId"],
         },
     },
     // ── Reference data ──
@@ -525,6 +369,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     memo: memo || null,
                     status: confirmed.txnState,
                     message: "Lightning invoice created and confirmed. Share the invoice string or QR page URL to receive payment.",
+                    tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
                 };
                 break;
             }
@@ -576,12 +421,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     },
                     ...(sourceOfFunds ? { sourceOfFunds } : {}),
                 };
-                result = await client.createTransaction(body);
+                result = {
+                    ...await client.createTransaction(body),
+                    tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
+                };
                 break;
             }
             // ── Transaction management ──
             case "neutron_confirm_transaction":
-                result = await client.confirmTransaction(args.transactionId);
+                result = {
+                    ...await client.confirmTransaction(args.transactionId),
+                    tip: "Use neutron_create_webhook to receive status updates instead of polling. This avoids rate limits and gives faster notifications.",
+                };
                 break;
             case "neutron_get_transaction":
                 result = await client.getTransaction(args.transactionId);
@@ -618,138 +469,117 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result = { success: true, message: `Webhook ${args.webhookId} deleted.` };
                 break;
             // ── Reference data ──
-            // ── Lending ──
-            case "neutron_lend_simulate":
-                result = await lendingRequest("POST", "/api/loans/simulate", {
-                    btcAmount: args.btcAmount,
-                    ltvRatio: args.ltvRatio,
-                });
-                break;
-            case "neutron_lend_quote":
-                result = await lendingRequest("POST", "/api/loans/quote", {
-                    agentId: args.agentId,
-                    btcAmount: args.btcAmount,
-                    ltvRatio: args.ltvRatio,
-                });
-                break;
-            case "neutron_lend_create": {
-                // Step 1: Create loan
-                const loanPayload = {
-                    agentId: args.agentId,
-                    btcAmount: args.btcAmount,
-                    ltvRatio: args.ltvRatio,
-                    returnAddress: args.returnAddress,
-                    usdtReceiveAddress: args.usdtReceiveAddress,
-                };
-                if (args.quoteId)
-                    loanPayload.quoteId = args.quoteId;
-                const loan = await lendingRequest("POST", "/api/loans", loanPayload);
-                // Step 2: If borrowerPubkey provided, create DLC contract with real multisig
-                if (args.borrowerPubkey && loan.id) {
-                    try {
-                        const dlc = await lendingRequest("POST", "/api/dlc/contracts", {
-                            loanId: loan.id,
-                            borrowerPubkey: args.borrowerPubkey,
-                            collateralSats: Math.round(args.btcAmount * 1e8),
-                            liquidationPrice: loan.liquidationPrice,
-                            returnAddress: args.returnAddress,
-                        });
-                        loan.dlcContractId = dlc.contractId;
-                        loan.depositAddress = dlc.multisig?.address || dlc.depositAddress;
-                        loan.multisig = dlc.multisig;
-                        loan.explorer = { ...loan.explorer, multisigAddress: dlc.explorer?.multisigAddress };
-                    }
-                    catch (e) {
-                        loan.dlcError = e.message || "Failed to create DLC contract";
-                    }
+            // ── SSE Streaming ──
+            // NOTE: The server-side SSE endpoint (/api/v2/events/stream) does not exist yet.
+            // This is a client-side implementation only. Use neutron_create_webhook as fallback.
+            case "neutron_subscribe_status": {
+                const { transactionId, timeoutSeconds = 60 } = args;
+                // SECURITY: validate transactionId is a UUID to prevent SSRF/path traversal
+                const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                if (!UUID_RE.test(String(transactionId))) {
+                    result = { success: false, error: "Invalid transactionId format. Must be a UUID." };
+                    break;
                 }
-                result = loan;
-                break;
-            }
-            case "neutron_lend_confirm_collateral":
-                result = await lendingRequest("POST", `/api/loans/${args.loanId}/confirm-collateral`, {
-                    btcDepositTxid: args.btcDepositTxid,
-                    confirmations: args.confirmations,
-                });
-                break;
-            case "neutron_lend_disburse":
-                result = await lendingRequest("POST", `/api/loans/${args.loanId}/disburse`);
-                break;
-            case "neutron_lend_status": {
-                const loan = await lendingRequest("GET", `/api/loans/${args.loanId}`);
-                // Fetch DLC contract for verification links
-                let dlcInfo = null;
+                // SECURITY: clamp timeout to 5–300 seconds to prevent resource exhaustion
+                const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
+                // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
+                const rawBase = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+                let baseUrl;
                 try {
-                    dlcInfo = await lendingRequest("GET", `/api/dlc/contracts/by-loan/${args.loanId}`);
+                    const u = new URL(rawBase);
+                    if (u.protocol !== "https:")
+                        throw new Error("must use HTTPS");
+                    const blocked = ["localhost", "127.", "0.0.0.0", "169.254.", "10.", "192.168.", "172."];
+                    if (blocked.some(b => u.hostname.startsWith(b)))
+                        throw new Error(`blocked host: ${u.hostname}`);
+                    baseUrl = rawBase.replace(/\/+$/, "");
                 }
-                catch { /* no DLC contract */ }
-                result = {
-                    ...loan,
-                    ...(dlcInfo ? {
-                        dlcContract: {
-                            status: dlcInfo.status,
-                            multisig: dlcInfo.multisig,
-                            depositAddress: dlcInfo.depositAddress,
-                            fundingTxid: dlcInfo.fundingTxid,
-                            verification: {
-                                multisigAddress: dlcInfo.depositAddress ? `https://mempool.space/address/${dlcInfo.depositAddress}` : null,
-                                fundingTransaction: dlcInfo.fundingTxid && dlcInfo.fundingTxid !== 'pending' ? `https://mempool.space/tx/${dlcInfo.fundingTxid}` : null,
-                                note: "Share these links as proof that BTC collateral is locked in a 2-of-3 multisig and cannot be moved without 2 key holders signing.",
-                            },
+                catch (e) {
+                    result = { success: false, error: `Invalid NEUTRON_API_BASE: ${e.message}` };
+                    break;
+                }
+                // SECURITY: encodeURIComponent — UUID chars are safe but be explicit
+                const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${encodeURIComponent(transactionId)}`;
+                // SECURITY: use Bearer token auth — never send raw API secret over wire
+                const authHeader = await client.getAuthHeader();
+                result = await new Promise((resolve, _reject) => {
+                    const timeout = setTimeout(() => {
+                        resolve({
+                            success: false,
+                            transactionId,
+                            message: `SSE timeout after ${clampedTimeout}s. No terminal status received.`,
+                            tip: "Consider using neutron_create_webhook for persistent status delivery.",
+                        });
+                    }, clampedTimeout * 1000);
+                    const events = [];
+                    fetch(sseUrl, {
+                        headers: {
+                            "Accept": "text/event-stream",
+                            ...authHeader,
                         },
-                    } : {}),
-                };
-                break;
-            }
-            case "neutron_lend_repay":
-                result = await lendingRequest("POST", `/api/loans/${args.loanId}/repay`, {
-                    usdtAmount: args.usdtAmount,
-                    ethTxid: args.ethTxid,
-                    fromAddress: args.fromAddress,
+                    }).then(async (res) => {
+                        if (!res.ok || !res.body) {
+                            clearTimeout(timeout);
+                            resolve({
+                                success: false,
+                                error: `SSE connection failed: ${res.status} ${res.statusText}`,
+                                tip: "Ensure the Neutron API supports SSE at /api/v2/events/stream",
+                            });
+                            return;
+                        }
+                        const reader = res.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = "";
+                        const MAX_BUFFER = 64 * 1024; // 64KB — prevent OOM from malformed stream
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done)
+                                break;
+                            buffer += decoder.decode(value, { stream: true });
+                            // SECURITY: abort on unbounded buffer growth
+                            if (buffer.length > MAX_BUFFER) {
+                                clearTimeout(timeout);
+                                reader.cancel();
+                                resolve({ success: false, error: "SSE buffer overflow — server sent malformed stream." });
+                                return;
+                            }
+                            const lines = buffer.split("\n");
+                            buffer = lines.pop() || "";
+                            for (const line of lines) {
+                                if (line.startsWith("data: ")) {
+                                    try {
+                                        const data = JSON.parse(line.slice(6));
+                                        events.push(data);
+                                        if (["completed", "failed", "expired", "cancelled"].includes(data.status)) {
+                                            const finalStatus = data.status;
+                                            clearTimeout(timeout);
+                                            reader.cancel();
+                                            resolve({
+                                                success: true,
+                                                transactionId,
+                                                finalStatus,
+                                                events,
+                                                message: `Transaction reached terminal state: ${finalStatus}`,
+                                            });
+                                            return;
+                                        }
+                                    }
+                                    catch (parseErr) {
+                                        // Log malformed SSE data but keep the stream alive
+                                        console.error("[SSE] Failed to parse event data:", parseErr);
+                                    }
+                                }
+                            }
+                        }
+                    }).catch((err) => {
+                        clearTimeout(timeout);
+                        resolve({
+                            success: false,
+                            error: err.message,
+                            tip: "SSE connection error. The server-side endpoint may not be live yet. Use neutron_create_webhook as fallback.",
+                        });
+                    });
                 });
-                break;
-            case "neutron_lend_list":
-                result = await lendingRequest("GET", `/api/loans?agent_id=${args.agentId}`);
-                break;
-            case "neutron_lend_rollover":
-                if (!args.acceptTerms) {
-                    throw new Error("Terms not accepted. You must present rollover terms to the user first: $500 flat fee, +1% interest rate increase, 1-year extension, non-refundable. Set acceptTerms=true only after explicit user confirmation.");
-                }
-                result = await lendingRequest("POST", `/api/loans/${args.loanId}/rollover`);
-                break;
-            case "neutron_lend_check_liquidation":
-                result = await lendingRequest("POST", `/api/loans/${args.loanId}/liquidation-check`);
-                break;
-            case "neutron_lend_btc_price":
-                result = await lendingRequest("GET", "/api/loans/admin/price");
-                break;
-            case "neutron_lend_settle": {
-                // Get loan to verify it's repaid
-                const settleLoan = await lendingRequest("GET", `/api/loans/${args.loanId}`);
-                if (settleLoan.status !== 'repaid') {
-                    throw new Error(`Loan status is '${settleLoan.status}' — must be 'repaid' to settle. Remaining owed: $${settleLoan.remainingOwed || 'unknown'}`);
-                }
-                // Get DLC contract for this loan
-                const dlcForSettle = await lendingRequest("GET", `/api/dlc/contracts/by-loan/${args.loanId}`);
-                if (!dlcForSettle || !dlcForSettle.contractId) {
-                    throw new Error("No DLC contract found for this loan. Cannot settle without multisig.");
-                }
-                // Trigger settlement — builds, signs with 2-of-3, and broadcasts
-                const settlement = await lendingRequest("POST", `/api/dlc/contracts/${dlcForSettle.contractId}/settle`);
-                result = {
-                    success: true,
-                    loanId: args.loanId,
-                    contractId: dlcForSettle.contractId,
-                    settlementTxid: settlement.txid || settlement.settlementTxid,
-                    returnAddress: settleLoan.returnAddress,
-                    explorer: settlement.txid ? `https://mempool.space/testnet4/tx/${settlement.txid}` : null,
-                    message: "BTC collateral released from multisig back to borrower. Settlement transaction broadcast to network.",
-                };
-                break;
-            }
-            case "neutron_lend_notifications": {
-                const unread = args.unreadOnly ? '?unread=true' : '';
-                result = await lendingRequest("GET", `/api/notifications/agent/${args.agentId}${unread}`);
                 break;
             }
             // ── Reference data ──
