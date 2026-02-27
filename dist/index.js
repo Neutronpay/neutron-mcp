@@ -777,25 +777,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // This is a client-side implementation only. Use neutron_create_webhook as fallback.
             case "neutron_subscribe_status": {
                 const { transactionId, timeoutSeconds = 60 } = args;
-                const baseUrl = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
-                const apiKey = process.env.NEUTRON_API_KEY;
-                const apiSecret = process.env.NEUTRON_API_SECRET;
-                const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${transactionId}`;
+                // SECURITY: validate transactionId is a UUID to prevent SSRF/path traversal
+                const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                if (!UUID_RE.test(String(transactionId))) {
+                    result = { success: false, error: "Invalid transactionId format. Must be a UUID." };
+                    break;
+                }
+                // SECURITY: clamp timeout to 5–300 seconds to prevent resource exhaustion
+                const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
+                // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
+                const rawBase = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+                let baseUrl;
+                try {
+                    const u = new URL(rawBase);
+                    if (u.protocol !== "https:")
+                        throw new Error("must use HTTPS");
+                    const blocked = ["localhost", "127.", "0.0.0.0", "169.254.", "10.", "192.168.", "172."];
+                    if (blocked.some(b => u.hostname.startsWith(b)))
+                        throw new Error(`blocked host: ${u.hostname}`);
+                    baseUrl = rawBase.replace(/\/+$/, "");
+                }
+                catch (e) {
+                    result = { success: false, error: `Invalid NEUTRON_API_BASE: ${e.message}` };
+                    break;
+                }
+                // SECURITY: encodeURIComponent — UUID chars are safe but be explicit
+                const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${encodeURIComponent(transactionId)}`;
+                // SECURITY: use Bearer token auth — never send raw API secret over wire
+                const authHeader = await client.getAuthHeader();
                 result = await new Promise((resolve, _reject) => {
                     const timeout = setTimeout(() => {
                         resolve({
                             success: false,
                             transactionId,
-                            message: `SSE timeout after ${timeoutSeconds}s. No terminal status received.`,
+                            message: `SSE timeout after ${clampedTimeout}s. No terminal status received.`,
                             tip: "Consider using neutron_create_webhook for persistent status delivery.",
                         });
-                    }, timeoutSeconds * 1000);
+                    }, clampedTimeout * 1000);
                     const events = [];
                     fetch(sseUrl, {
                         headers: {
                             "Accept": "text/event-stream",
-                            "x-api-key": apiKey || "",
-                            "x-api-secret": apiSecret || "",
+                            ...authHeader,
                         },
                     }).then(async (res) => {
                         if (!res.ok || !res.body) {
@@ -810,11 +833,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         const reader = res.body.getReader();
                         const decoder = new TextDecoder();
                         let buffer = "";
+                        const MAX_BUFFER = 64 * 1024; // 64KB — prevent OOM from malformed stream
                         while (true) {
                             const { done, value } = await reader.read();
                             if (done)
                                 break;
                             buffer += decoder.decode(value, { stream: true });
+                            // SECURITY: abort on unbounded buffer growth
+                            if (buffer.length > MAX_BUFFER) {
+                                clearTimeout(timeout);
+                                reader.cancel();
+                                resolve({ success: false, error: "SSE buffer overflow — server sent malformed stream." });
+                                return;
+                            }
                             const lines = buffer.split("\n");
                             buffer = lines.pop() || "";
                             for (const line of lines) {
@@ -836,7 +867,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                             return;
                                         }
                                     }
-                                    catch { }
+                                    catch (parseErr) {
+                                        // Log malformed SSE data but keep the stream alive
+                                        console.error("[SSE] Failed to parse event data:", parseErr);
+                                    }
                                 }
                             }
                         }
