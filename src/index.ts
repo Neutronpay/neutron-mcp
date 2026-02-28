@@ -560,7 +560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
 
         // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
-        const rawBase = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+        const rawBase = process.env.NEUTRON_API_BASE || "https://api.neutron.me";
         let baseUrl: string;
         try {
           const u = new URL(rawBase);
@@ -683,7 +683,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
 
         // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
-        const rawBase = process.env.NEUTRON_API_BASE || "https://enapi.npay.live";
+        const rawBase = process.env.NEUTRON_API_BASE || "https://api.neutron.me";
         let baseUrl: string;
         try {
           const u = new URL(rawBase);
