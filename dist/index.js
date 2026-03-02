@@ -282,19 +282,6 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
             required: ["transactionId"],
         },
     },
-    // ── SSE Streaming ──
-    {
-        name: "neutron_subscribe_status",
-        description: "Stream real-time transaction status updates via SSE. Use this for agents that cannot receive webhook POSTs (ephemeral agents without a public endpoint). Connects to the Neutron SSE stream and returns updates as they arrive.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                transactionId: { type: "string", description: "Transaction ID to monitor" },
-                timeoutSeconds: { type: "number", description: "Max seconds to wait (default: 60)" },
-            },
-            required: ["transactionId"],
-        },
-    },
     // ── Reference data ──
     {
         name: "neutron_get_rate",
@@ -482,119 +469,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result = { success: true, message: `Webhook ${args.webhookId} deleted.` };
                 break;
             // ── Reference data ──
-            // ── SSE Streaming ──
-            // NOTE: The server-side SSE endpoint (/api/v2/events/stream) does not exist yet.
-            // This is a client-side implementation only. Use neutron_create_webhook as fallback.
-            case "neutron_subscribe_status": {
-                const { transactionId, timeoutSeconds = 60 } = args;
-                // SECURITY: validate transactionId is a UUID to prevent SSRF/path traversal
-                const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                if (!UUID_RE.test(String(transactionId))) {
-                    result = { success: false, error: "Invalid transactionId format. Must be a UUID." };
-                    break;
-                }
-                // SECURITY: clamp timeout to 5–300 seconds to prevent resource exhaustion
-                const clampedTimeout = Math.min(Math.max(Number(timeoutSeconds) || 60, 5), 300);
-                // SECURITY: validate NEUTRON_API_BASE to prevent SSRF via misconfigured env
-                const rawBase = process.env.NEUTRON_API_BASE || "https://api.neutron.me";
-                let baseUrl;
-                try {
-                    const u = new URL(rawBase);
-                    if (u.protocol !== "https:")
-                        throw new Error("must use HTTPS");
-                    const blocked = ["localhost", "127.", "0.0.0.0", "169.254.", "10.", "192.168.", "172."];
-                    if (blocked.some(b => u.hostname.startsWith(b)))
-                        throw new Error(`blocked host: ${u.hostname}`);
-                    baseUrl = rawBase.replace(/\/+$/, "");
-                }
-                catch (e) {
-                    result = { success: false, error: `Invalid NEUTRON_API_BASE: ${e.message}` };
-                    break;
-                }
-                // SECURITY: encodeURIComponent — UUID chars are safe but be explicit
-                const sseUrl = `${baseUrl}/api/v2/events/stream?transactionId=${encodeURIComponent(transactionId)}`;
-                // SECURITY: use Bearer token auth — never send raw API secret over wire
-                const authHeader = await client.getAuthHeader();
-                result = await new Promise((resolve, _reject) => {
-                    const timeout = setTimeout(() => {
-                        resolve({
-                            success: false,
-                            transactionId,
-                            message: `SSE timeout after ${clampedTimeout}s. No terminal status received.`,
-                            tip: "Consider using neutron_create_webhook for persistent status delivery.",
-                        });
-                    }, clampedTimeout * 1000);
-                    const events = [];
-                    fetch(sseUrl, {
-                        headers: {
-                            "Accept": "text/event-stream",
-                            ...authHeader,
-                        },
-                    }).then(async (res) => {
-                        if (!res.ok || !res.body) {
-                            clearTimeout(timeout);
-                            resolve({
-                                success: false,
-                                error: `SSE connection failed: ${res.status} ${res.statusText}`,
-                                tip: "Ensure the Neutron API supports SSE at /api/v2/events/stream",
-                            });
-                            return;
-                        }
-                        const reader = res.body.getReader();
-                        const decoder = new TextDecoder();
-                        let buffer = "";
-                        const MAX_BUFFER = 64 * 1024; // 64KB — prevent OOM from malformed stream
-                        while (true) {
-                            const { done, value } = await reader.read();
-                            if (done)
-                                break;
-                            buffer += decoder.decode(value, { stream: true });
-                            // SECURITY: abort on unbounded buffer growth
-                            if (buffer.length > MAX_BUFFER) {
-                                clearTimeout(timeout);
-                                reader.cancel();
-                                resolve({ success: false, error: "SSE buffer overflow — server sent malformed stream." });
-                                return;
-                            }
-                            const lines = buffer.split("\n");
-                            buffer = lines.pop() || "";
-                            for (const line of lines) {
-                                if (line.startsWith("data: ")) {
-                                    try {
-                                        const data = JSON.parse(line.slice(6));
-                                        events.push(data);
-                                        if (["completed", "failed", "expired", "cancelled"].includes(data.status)) {
-                                            const finalStatus = data.status;
-                                            clearTimeout(timeout);
-                                            reader.cancel();
-                                            resolve({
-                                                success: true,
-                                                transactionId,
-                                                finalStatus,
-                                                events,
-                                                message: `Transaction reached terminal state: ${finalStatus}`,
-                                            });
-                                            return;
-                                        }
-                                    }
-                                    catch (parseErr) {
-                                        // Log malformed SSE data but keep the stream alive
-                                        console.error("[SSE] Failed to parse event data:", parseErr);
-                                    }
-                                }
-                            }
-                        }
-                    }).catch((err) => {
-                        clearTimeout(timeout);
-                        resolve({
-                            success: false,
-                            error: err.message,
-                            tip: "SSE connection error. The server-side endpoint may not be live yet. Use neutron_create_webhook as fallback.",
-                        });
-                    });
-                });
-                break;
-            }
             // ── SSE Streaming ──
             // NOTE: The server-side SSE endpoint (/api/v2/events/stream) does not exist yet.
             // This is a client-side implementation only. Use neutron_create_webhook as fallback.
