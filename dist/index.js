@@ -389,19 +389,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 if (a.institutionCode)
                     destReqDetails.institutionCode = a.institutionCode;
                 // Build KYC if fiat payout fields present
-                let kyc;
-                if (a.recipientName || a.countryCode) {
-                    kyc = {
+                const isFiatPayout = !!(a.bankAcctNum || a.recipientName || a.countryCode);
+                let destKyc;
+                let sourceKyc;
+                if (isFiatPayout) {
+                    destKyc = {
                         type: a.kycType || "individual",
                         details: {
-                            legalFullName: a.recipientName,
-                            countryCode: a.countryCode,
+                            legalFullName: a.recipientName || "Account Holder",
+                            countryCode: a.countryCode || "VN",
+                            address1: a.recipientAddress || "N/A",
+                            contactNumber: a.recipientPhone || "N/A",
+                        },
+                    };
+                    // Sender KYC — pull from account object
+                    const acct = await client.getAccount();
+                    const kycDetails = acct?.kyc?.details ?? acct?.kycDetails ?? {};
+                    sourceKyc = {
+                        type: a.kycType || "individual",
+                        details: {
+                            legalFullName: kycDetails.legalFullName || acct?.displayName || acct?.extId || "Account Holder",
+                            countryCode: kycDetails.countryCode || acct?.countryCode || "VN",
+                            address1: kycDetails.address1 || kycDetails.address || "N/A",
+                            contactNumber: kycDetails.contactNumber || kycDetails.phone || "N/A",
                         },
                     };
                 }
                 // Build source of funds for fiat payouts
                 let sourceOfFunds;
-                if (a.bankAcctNum) {
+                if (isFiatPayout) {
                     sourceOfFunds = { purpose: 1, source: 5, relationship: 3 };
                 }
                 const body = {
@@ -411,13 +427,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         method: a.sourceMethod,
                         ...(a.sourceAmount !== undefined ? { amtRequested: a.sourceAmount } : {}),
                         reqDetails: {},
+                        ...(sourceKyc ? { kyc: sourceKyc } : {}),
                     },
                     destReq: {
                         ccy: a.destCcy,
                         method: a.destMethod,
                         ...(a.destAmount !== undefined ? { amtRequested: a.destAmount } : {}),
                         reqDetails: destReqDetails,
-                        ...(kyc ? { kyc } : {}),
+                        ...(destKyc ? { kyc: destKyc } : {}),
                     },
                     ...(sourceOfFunds ? { sourceOfFunds } : {}),
                 };
