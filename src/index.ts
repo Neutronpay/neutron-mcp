@@ -455,7 +455,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           sourceKyc = {
             type: a.kycType || "individual",
             details: {
-              legalFullName: kycDetails.legalFullName || acct?.displayName || acct?.extId || "Account Holder",
+              legalFullName: kycDetails.legalFullName || acct?.beneficialAccountName || acct?.displayName || acct?.extId || "Account Holder",
               countryCode: kycDetails.countryCode || acct?.countryCode || "VN",
               address1: kycDetails.address1 || kycDetails.address || "N/A",
               contactNumber: kycDetails.contactNumber || kycDetails.phone || "N/A",
