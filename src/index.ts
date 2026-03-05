@@ -113,7 +113,8 @@ On-chain send: sourceCcy="BTC", sourceMethod="neutronpay", destCcy="BTC", destMe
 On-chain receive: sourceCcy="BTC", sourceMethod="on-chain", destCcy="BTC", destMethod="neutronpay", destAmount=0.001
 USDT send (TRON): sourceCcy="USDT", sourceMethod="neutronpay", destCcy="USDT", destMethod="tron", address="T..."
 Internal swap: sourceCcy="BTC", sourceMethod="neutronpay", destCcy="USDT", destMethod="neutronpay", sourceAmount=0.001
-Fiat payout: sourceCcy="BTC", sourceMethod="neutronpay", destCcy="VND", destMethod="vnd-instant", bankAcctNum="...", institutionCode="...", recipientName="...", countryCode="VN"
+Fiat payout: sourceCcy="BTC", sourceMethod="neutronpay", destCcy="VND", destMethod="vnd-instant", bankAcctNum="...", institutionCode="...", recipientName="...", countryCode="VN", recipientPhone="+84912345678"
+IDR payout example: destCcy="IDR", destMethod="idr-instant", countryCode="ID", recipientPhone="+628123456789" (E.164 format — always include + prefix)
 
 Amounts are in BTC (not sats). 100 sats = 0.00000100 BTC.
 Set amount on ONE side only (source OR dest), not both.
@@ -332,7 +333,7 @@ Returns a quoted transaction — call neutron_confirm_transaction to execute.`,
     inputSchema: {
       type: "object" as const,
       properties: {
-        countryCode: { type: "string", description: "ISO country code (e.g. VN, NG, KE, GH)" },
+        countryCode: { type: "string", description: "ISO country code (e.g. VN for Vietnam, ID for Indonesia, TH for Thailand, SG for Singapore, MY for Malaysia)" },
       },
       required: ["countryCode"],
     },
@@ -436,6 +437,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (a.institutionCode) destReqDetails.institutionCode = a.institutionCode;
 
         // Build KYC if fiat payout fields present
+        // Phone normalisation helpers
+        const _cpfx: Record<string, string> = { VN: "+84", ID: "+62", TH: "+66", SG: "+65", MY: "+60", PH: "+63" };
+        const _normPhone = (p: string | undefined, cc: string): string => { if (!p || p === "N/A") return "N/A"; if (p.startsWith("+")) return p; const x = _cpfx[cc?.toUpperCase()]; return x ? x + p.replace(/^0/, "") : p; };
+        const _dc = (a.countryCode || "VN").toUpperCase();
         const isFiatPayout = !!(a.bankAcctNum || a.recipientName || a.countryCode);
         let destKyc: any;
         let sourceKyc: any;
@@ -444,9 +449,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             type: a.kycType || "individual",
             details: {
               legalFullName: a.recipientName || "Account Holder",
-              countryCode: a.countryCode || "VN",
+              countryCode: a.countryCode || "VN", // caller must pass correct countryCode for non-VN payouts
               address1: a.recipientAddress || "N/A",
-              contactNumber: a.recipientPhone || "N/A",
+              contactNumber: _normPhone(a.recipientPhone, _dc),
             },
           };
           // Sender KYC — pull from account object
